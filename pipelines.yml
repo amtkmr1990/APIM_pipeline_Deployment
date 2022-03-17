@@ -10,7 +10,7 @@ trigger:
     - main
   paths:
     exclude:
-    - 'catalystReactor-api-pipelines.yml'
+    - 'pipelines.yml'
     - 'apim_api_deploy.ps1'
 
 pool:
@@ -38,11 +38,11 @@ stages:
           displayName: Restore
           inputs:
             command: restore
-            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
+            projects: '**/<ProjectPath>.csproj'
         - task: DotNetCoreCLI@2
           displayName: Build
           inputs:
-            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
+            projects: '**/<ProjectPath>.csproj'
             arguments: '--configuration $(BuildConfiguration)'  
 
         - task: DotNetCoreCLI@2
@@ -50,61 +50,64 @@ stages:
           inputs:
             command: publish
             publishWebProjects: false
-            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
-            arguments: '--configuration $(BuildConfiguration) --output $(build.artifactstagingdirectory)/ci-build --no-build'
+            projects: '**/<ProjectPath>.csproj'
+            arguments: '--configuration $(BuildConfiguration) --output $(build.artifactstagingdirectory) --no-build'
             zipAfterPublish: false
             modifyOutputPath: false  
-        
-        # - script: | 
-        #     cd $(build.artifactstagingdirectory)/ci-build
-        #     dotnet new tool-manifest
-        #   displayName: 'Create Tool Manifest'
+ 
+ # Use the Swashbuckle to generate the swagger file 
+ # Else in powershell script we are using curl to download the swagger file 
+         - script: | 
+             cd $(build.artifactstagingdirectory)
+             dotnet new tool-manifest
+           displayName: 'Create Tool Manifest'
 
-        # - script: |
-        #     cd $(build.artifactstagingdirectory)/ci-build
-        #     dotnet tool install --version 6.2.3 Swashbuckle.AspNetCore.Cli
-        #   displayName: 'Install Swashbuckle CLI'
+         - script: |
+             cd $(build.artifactstagingdirectory)
+             dotnet tool install --version 6.2.3 Swashbuckle.AspNetCore.Cli
+           displayName: 'Install Swashbuckle CLI'
     
-        # - script: |
-        #     echo 'content of ci-build'           
-        #     ls $(build.artifactstagingdirectory)/ci-build
-        #     cd $(build.artifactstagingdirectory)/ci-build
-        #     dotnet tool run swagger tofile --output $(build.artifactstagingdirectory)/ci-build/swagger.json GPU.CtReactor.Api.dll v1
-        #   displayName: 'Generate Swagger'
+         - script: |
+             echo 'content of ci-build'           
+             ls $(build.artifactstagingdirectory)
+             cd $(build.artifactstagingdirectory)
+             dotnet tool run swagger tofile --output $(build.artifactstagingdirectory)/swagger.json <ProjectAssemblyDLL>.dll v1
+           displayName: 'Generate Swagger'
         
         - task: ArchiveFiles@2
-          displayName: 'Archive $(Build.StagingDirectory)/ci-build'
+          displayName: 'Archive $(Build.StagingDirectory)'
           inputs:
-            rootFolderOrFile: '$(Build.StagingDirectory)/ci-build'
+            rootFolderOrFile: '$(Build.StagingDirectory)'
             includeRootFolder: false
-            archiveFile: '$(Build.ArtifactStagingDirectory)/CatalystApi-$(Build.BuildNumber).zip'
+            archiveFile: '$(Build.ArtifactStagingDirectory)/Api-$(Build.BuildNumber).zip'
           
         - task: PublishBuildArtifacts@1
           displayName: 'Publish Artifact'
           inputs:
-            PathtoPublish: '$(Build.ArtifactStagingDirectory)/CatalystApi-$(Build.BuildNumber).zip'
+            PathtoPublish: '$(Build.ArtifactStagingDirectory)/Api-$(Build.BuildNumber).zip'
           condition: succeededOrFailed()
   
   - stage: Dev
-    displayName: Catalyst API Deploy to Dev
+    displayName: API Deploy to Dev
     pool: 'LYB Internal Agent Pool'
-    variables:
-    - group: Catalyst.API
+    variables:              # passing variable if any 
+    - group: Project.API
     - name: ASPNETCORE_ENVIRONMENT
       value: 'Development'
     - name: KeyVault
-      value: 'kv-catalystreactor-dev'
+      value: 'kv-project-dev'
     - name: WebAppName
-      value: 'as-catalystreactorapi-dev'
+      value: 'as-projectapi-dev'
     jobs:
       - deployment: Deploy 
         workspace:
           clean: all # what to clean up before the job runs
-        environment: catalyst_API_DEV
+        environment: API_DEV
         strategy:
           runOnce:
             deploy:
               steps:
+              #  this may not be required for all 
               # - task: DownloadPipelineArtifact@2
               #   inputs:
               #     buildType: 'current'
@@ -115,37 +118,42 @@ stages:
                 displayName: 'Deploy Azure App Service'
                 inputs:
                   ConnectionType: 'AzureRM'
-                  azureSubscription: 'lyb-nonprd-rg-catalystreactor-dev'
+                  azureSubscription: '<Service Connection>'
                   appType: 'webAppLinux'
                   WebAppName: '$(WebAppName)'
                   packageForLinux: '$(Agent.BuildDirectory)/**/*.zip'
-                  AppSettings: '-ASPNETCORE_ENVIRONMENT "$(ASPNETCORE_ENVIRONMENT)" -DBSchemaName "$(DBSchemaName)" -KeyVault "$(KeyVault)" -EmailLogicApp "$(EmailLogicApp)" -TenantId "$(TenantId)" '
+                  AppSettings: '-ASPNETCORE_ENVIRONMENT "$(ASPNETCORE_ENVIRONMENT)" -DBSchemaName "$(DBSchemaName)" -KeyVault "$(KeyVault)" -TenantId "$(TenantId)" '
 
+# APIM deployment stage 
   - stage: APIM_DEV
     displayName: APIM_DEV
     pool: 'LYB Internal Agent Pool'
     variables:
     - name: swaggerSourceUrl
-      value: 'https://as-catalystreactorapi-dev.azurewebsites.net/swagger/v1/swagger.json'
+      value: 'https://as-projectapi-dev.azurewebsites.net/swagger/v1/swagger.json'
     - name: APIMResourceGroup
-      value: 'rg-apiplatform-nonprd'
+      value: '<APIM_RG>'
     - name: APIMName
-      value: 'apim-apiplatform-nonprd'
+      value: '<APIM_NAME>'
     - name: backEndUrl
-      value: 'https://as-catalystreactorapi-dev.azurewebsites.net'
+      value: 'https://as-projectapi-dev.azurewebsites.net'  # Change variable value as per your project 
     - name: swaggerTitle
-      value: 'CatalystReactor-DEV'
-    - name: uIUrl
-      value: 'https://gpucatalystreactorwiki-dev.lyondellbasell.com'
+      value: 'Project-DEV' # This name will be displayed when new API is added to APIM 
+
+# this variable may not be required 
+#     - name: uIUrl
+#       value: 'https://projectui-dev.lyondellbasell.com'
+
     - name: ApiId
-      value: 'catalystreactor-dev'
-    
+      value: 'project-dev' # Unique name will be displayed when new API is added to APIM 
+ 
+ # below powershell is called for API's deployment on APIM using swagger 
     jobs:
     - job: APIM_API_Deploy
       steps:
         - task: AzurePowerShell@5
           inputs:
-            azureSubscription: 'lyb-nonprd-rg-riskassessment-stg'
+            azureSubscription: '<ADO Service Connection>'
             ScriptType: 'FilePath'
             ScriptPath: 'apim_api_deploy.ps1'
             ScriptArguments: '-swaggerSourceUrl $(swaggerSourceUrl) -APIMResourceGroup $(APIMResourceGroup) -APIMName $(APIMName) -backEndUrl $(backEndUrl) -swaggerTitle $(swaggerTitle) -uIUrl $(uIUrl) -ApiId $(ApiId)'
