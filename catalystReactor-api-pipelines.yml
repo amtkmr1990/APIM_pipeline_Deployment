@@ -1,0 +1,153 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    exclude:
+    - 'catalystReactor-api-pipelines.yml'
+    - 'apim_api_deploy.ps1'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+stages:
+  - stage: Build_Stage
+    displayName: Build Stage 
+
+    jobs:
+      - job: ApiBuild
+        displayName: Api Build 
+
+        steps:
+        - task: UseDotNet@2
+          inputs:
+            packageType: 'sdk'
+            version: '5.0.x'
+        - task: DotNetCoreCLI@2
+          displayName: Restore
+          inputs:
+            command: restore
+            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
+        - task: DotNetCoreCLI@2
+          displayName: Build
+          inputs:
+            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
+            arguments: '--configuration $(BuildConfiguration)'  
+
+        - task: DotNetCoreCLI@2
+          displayName: Publish
+          inputs:
+            command: publish
+            publishWebProjects: false
+            projects: '**/GPU.CtReactor.Api/GPU.CtReactor.Api.csproj'
+            arguments: '--configuration $(BuildConfiguration) --output $(build.artifactstagingdirectory)/ci-build --no-build'
+            zipAfterPublish: false
+            modifyOutputPath: false  
+        
+        # - script: | 
+        #     cd $(build.artifactstagingdirectory)/ci-build
+        #     dotnet new tool-manifest
+        #   displayName: 'Create Tool Manifest'
+
+        # - script: |
+        #     cd $(build.artifactstagingdirectory)/ci-build
+        #     dotnet tool install --version 6.2.3 Swashbuckle.AspNetCore.Cli
+        #   displayName: 'Install Swashbuckle CLI'
+    
+        # - script: |
+        #     echo 'content of ci-build'           
+        #     ls $(build.artifactstagingdirectory)/ci-build
+        #     cd $(build.artifactstagingdirectory)/ci-build
+        #     dotnet tool run swagger tofile --output $(build.artifactstagingdirectory)/ci-build/swagger.json GPU.CtReactor.Api.dll v1
+        #   displayName: 'Generate Swagger'
+        
+        - task: ArchiveFiles@2
+          displayName: 'Archive $(Build.StagingDirectory)/ci-build'
+          inputs:
+            rootFolderOrFile: '$(Build.StagingDirectory)/ci-build'
+            includeRootFolder: false
+            archiveFile: '$(Build.ArtifactStagingDirectory)/CatalystApi-$(Build.BuildNumber).zip'
+          
+        - task: PublishBuildArtifacts@1
+          displayName: 'Publish Artifact'
+          inputs:
+            PathtoPublish: '$(Build.ArtifactStagingDirectory)/CatalystApi-$(Build.BuildNumber).zip'
+          condition: succeededOrFailed()
+  
+  - stage: Dev
+    displayName: Catalyst API Deploy to Dev
+    pool: 'LYB Internal Agent Pool'
+    variables:
+    - group: Catalyst.API
+    - name: ASPNETCORE_ENVIRONMENT
+      value: 'Development'
+    - name: KeyVault
+      value: 'kv-catalystreactor-dev'
+    - name: WebAppName
+      value: 'as-catalystreactorapi-dev'
+    jobs:
+      - deployment: Deploy 
+        workspace:
+          clean: all # what to clean up before the job runs
+        environment: catalyst_API_DEV
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+              # - task: DownloadPipelineArtifact@2
+              #   inputs:
+              #     buildType: 'current'
+              #     artifactName: 'drop'
+              #     targetPath: '$(System.ArtifactsDirectory)'
+
+              - task: AzureRmWebAppDeployment@4
+                displayName: 'Deploy Azure App Service'
+                inputs:
+                  ConnectionType: 'AzureRM'
+                  azureSubscription: 'lyb-nonprd-rg-catalystreactor-dev'
+                  appType: 'webAppLinux'
+                  WebAppName: '$(WebAppName)'
+                  packageForLinux: '$(Agent.BuildDirectory)/**/*.zip'
+                  AppSettings: '-ASPNETCORE_ENVIRONMENT "$(ASPNETCORE_ENVIRONMENT)" -DBSchemaName "$(DBSchemaName)" -KeyVault "$(KeyVault)" -EmailLogicApp "$(EmailLogicApp)" -TenantId "$(TenantId)" '
+
+  - stage: APIM_DEV
+    displayName: APIM_DEV
+    pool: 'LYB Internal Agent Pool'
+    variables:
+    - name: swaggerSourceUrl
+      value: 'https://as-catalystreactorapi-dev.azurewebsites.net/swagger/v1/swagger.json'
+    - name: APIMResourceGroup
+      value: 'rg-apiplatform-nonprd'
+    - name: APIMName
+      value: 'apim-apiplatform-nonprd'
+    - name: backEndUrl
+      value: 'https://as-catalystreactorapi-dev.azurewebsites.net'
+    - name: swaggerTitle
+      value: 'CatalystReactor-DEV'
+    - name: uIUrl
+      value: 'https://gpucatalystreactorwiki-dev.lyondellbasell.com'
+    - name: ApiId
+      value: 'catalystreactor-dev'
+    
+    jobs:
+    - job: APIM_API_Deploy
+      steps:
+        - task: AzurePowerShell@5
+          inputs:
+            azureSubscription: 'lyb-nonprd-rg-riskassessment-stg'
+            ScriptType: 'FilePath'
+            ScriptPath: 'apim_api_deploy.ps1'
+            ScriptArguments: '-swaggerSourceUrl $(swaggerSourceUrl) -APIMResourceGroup $(APIMResourceGroup) -APIMName $(APIMName) -backEndUrl $(backEndUrl) -swaggerTitle $(swaggerTitle) -uIUrl $(uIUrl) -ApiId $(ApiId)'
+            FailOnStandardError: true
+            azurePowerShellVersion: 'LatestVersion'
